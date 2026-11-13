@@ -2,7 +2,6 @@ import os
 import sys
 import json
 import tempfile
-import textwrap
 import streamlit as st
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -12,13 +11,21 @@ from tools.human_validation_tool import human_validation_tool
 from tools.pdf_report_generator import generate_pdf_report
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-LOG_PATH = os.path.join(BASE_DIR, "logs", "system_logs.json")
+LOG_PATH  = os.path.join(BASE_DIR, "logs", "system_logs.json")
 
-st.set_page_config(page_title="MedTriage AI", page_icon="MT", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(
+    page_title="MedTriage AI",
+    page_icon="🫁",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
+# ─────────────────────────────────────────────────────────────────────
+# HELPERS
+# ─────────────────────────────────────────────────────────────────────
 
-def H(html):
-    st.markdown(textwrap.dedent(html).strip(), unsafe_allow_html=True)
+def md(html: str):
+    st.markdown(html, unsafe_allow_html=True)
 
 
 def load_logs():
@@ -32,730 +39,646 @@ def load_logs():
     return []
 
 
-def safe_float(value):
+def safe_float(v):
     try:
-        value = float(str(value).replace("%", "").strip())
-        return value if value <= 1 else value / 100
+        v = float(str(v).replace("%", "").strip())
+        return v if v <= 1 else v / 100
     except Exception:
         return None
 
 
-def format_confidence(value):
-    cf = safe_float(value)
+def fmt_conf(v):
+    cf = safe_float(v)
     if cf is None:
-        return "N/A", 0
+        return "—", 0
     return f"{cf * 100:.1f}%", min(cf * 100, 100)
 
 
-def pred_class(pred):
-    return "danger" if "pneumonia" in str(pred).lower() else "success"
-
-
-def short_risk_label(risk):
+def risk_info(risk):
     r = str(risk).lower()
-    if "high" in r:
-        return "High Risk"
-    if "medium" in r:
-        return "Medium Risk"
-    if "uncertain" in r:
-        return "Uncertain Risk"
-    if "low" in r:
-        return "Low Risk"
-    return "Unknown"
+    if "high"    in r: return "High Risk",      "#EF4444", "#FEF2F2"
+    if "medium"  in r: return "Medium Risk",    "#F59E0B", "#FFFBEB"
+    if "uncertain" in r: return "Uncertain",    "#8B5CF6", "#F5F3FF"
+    if "low"     in r: return "Low Risk",       "#10B981", "#ECFDF5"
+    return "Unknown", "#6B7280", "#F9FAFB"
 
 
-def risk_class(risk):
-    r = str(risk).lower()
-    if "high" in r:
-        return "danger"
-    if "medium" in r or "uncertain" in r:
-        return "warning"
-    return "success"
+def pred_info(pred):
+    if "pneumonia" in str(pred).lower():
+        return "#EF4444", "#FEF2F2", "🔴"
+    return "#10B981", "#ECFDF5", "🟢"
 
 
 def get_metrics(logs):
-    completed = [
-        x for x in logs
-        if x.get("agent") == "Orchestrator Agent"
-        and x.get("action") == "Workflow completed successfully"
-    ]
+    done   = [x for x in logs if x.get("agent") == "Orchestrator Agent"
+              and x.get("action") == "Workflow completed successfully"]
     errors = [x for x in logs if x.get("error")]
-
+    confs  = []
     normal = pneumonia = 0
-    confs = []
-
-    for log in completed:
-        result = log.get("result") or {}
-        pred = str(result.get("prediction", "")).upper()
-        conf = safe_float(result.get("confidence"))
-
-        if "NORMAL" in pred:
-            normal += 1
-        elif "PNEUMONIA" in pred:
-            pneumonia += 1
-
-        if conf is not None:
-            confs.append(conf)
-
+    for log in done:
+        r    = log.get("result") or {}
+        pred = str(r.get("prediction", "")).upper()
+        cf   = safe_float(r.get("confidence"))
+        if "NORMAL"    in pred: normal    += 1
+        if "PNEUMONIA" in pred: pneumonia += 1
+        if cf is not None:      confs.append(cf)
     return {
-        "total": len(completed),
-        "normal": normal,
+        "total":     len(done),
+        "normal":    normal,
         "pneumonia": pneumonia,
-        "errors": len(errors),
-        "avg": sum(confs) / len(confs) if confs else 0,
+        "errors":    len(errors),
+        "avg":       sum(confs) / len(confs) if confs else 0,
     }
 
 
-def render_report(report):
-    labels = {
-        "analysis_type": "Analysis Type",
-        "prediction": "Prediction",
-        "confidence": "Confidence",
-        "risk_level": "Risk Level",
-        "recommendation": "Recommendation",
-        "medical_disclaimer": "Medical Disclaimer",
-        "human_validation_status": "Validation Status",
-        "reviewer_name": "Reviewer",
-        "review_timestamp": "Review Date",
-        "final_status": "Final Status",
-        "generation_mode": "Generation Mode",
-        "timestamp": "Timestamp",
-    }
-
-    for key, value in report.items():
-        label = labels.get(key, key.replace("_", " ").title())
-
-        if key == "risk_level":
-            value = short_risk_label(value)
-
-        if isinstance(value, list):
-            rows = "".join([f"<li>{item}</li>" for item in value])
-            H(f"""
-            <div class="report-item">
-              <div class="label">{label}</div>
-              <ul>{rows}</ul>
-            </div>
-            """)
-        elif isinstance(value, dict):
-            rows = "".join([f"<p><b>{k.replace('_',' ').title()}:</b> {v}</p>" for k, v in value.items()])
-            H(f"""
-            <div class="report-item">
-              <div class="label">{label}</div>
-              <div class="text">{rows}</div>
-            </div>
-            """)
-        else:
-            H(f"""
-            <div class="report-item">
-              <div class="label">{label}</div>
-              <div class="text">{value}</div>
-            </div>
-            """)
-
-
-def render_history(logs):
-    completed = [
-        x for x in logs
-        if x.get("agent") == "Orchestrator Agent"
-        and x.get("action") == "Workflow completed successfully"
-    ][-6:][::-1]
-
-    if not completed:
-        H('<div class="muted">No completed analysis yet.</div>')
-        return
-
-    for log in completed:
-        result = log.get("result") or {}
-        pred = result.get("prediction", "N/A")
-        risk = short_risk_label(result.get("risk_level", "N/A"))
-        conf, _ = format_confidence(result.get("confidence"))
-
-        H(f"""
-        <div class="history-row">
-          <div>
-            <div class="mono">{log.get("timestamp", "N/A")}</div>
-            <div class="muted">Workflow completed</div>
-          </div>
-          <span class="badge {pred_class(pred)}">{pred}</span>
-          <div class="muted center">{conf}</div>
-          <span class="badge {risk_class(risk)}">{risk}</span>
-        </div>
-        """)
-
-
-def render_errors(logs):
-    errors = [x for x in logs if x.get("error")][-4:][::-1]
-    if not errors:
-        H('<div class="muted">No recent errors.</div>')
-        return
-
-    for err in errors:
-        H(f"""
-        <div class="error-box">
-          <b>{err.get("agent", "Agent")}</b>
-          <p>{err.get("action", "")}</p>
-          <small>{err.get("error", "")}</small>
-        </div>
-        """)
-
-
-logs = load_logs()
-metrics = get_metrics(logs)
-
-H("""
+# ─────────────────────────────────────────────────────────────────────
+# CSS  — clean clinical white with navy/teal accents
+# ─────────────────────────────────────────────────────────────────────
+md("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&display=swap');
 
 html, body, [class*="css"] {
-    font-family: Inter, sans-serif;
+    font-family: 'DM Sans', sans-serif;
+    color: #1E293B;
 }
 
 .stApp {
-    background:
-    radial-gradient(circle at 20% 10%, rgba(34,211,238,.16), transparent 30%),
-    radial-gradient(circle at 90% 10%, rgba(20,184,166,.16), transparent 28%),
-    linear-gradient(135deg, #020617 0%, #07111f 45%, #020617 100%);
-    color: #f8fafc;
+    background: #F8FAFC;
 }
 
-#MainMenu, footer, header {visibility: hidden;}
-.block-container {padding: 24px 34px 55px !important; max-width: 1380px !important;}
+#MainMenu, footer, header { visibility: hidden; }
+.block-container {
+    padding: 28px 36px 60px !important;
+    max-width: 1440px !important;
+}
 
+/* ── Sidebar ───────────────────────────────────────────────── */
 section[data-testid="stSidebar"] {
-    background: rgba(2, 6, 23, .92);
-    border-right: 1px solid rgba(148,163,184,.12);
+    background: #0F172A !important;
+    border-right: 1px solid #1E293B;
+}
+section[data-testid="stSidebar"] * { color: #CBD5E1 !important; }
+section[data-testid="stSidebar"] .stMarkdown h1,
+section[data-testid="stSidebar"] .stMarkdown h2,
+section[data-testid="stSidebar"] .stMarkdown h3 {
+    color: #F1F5F9 !important;
 }
 
-.card, .hero, .panel {
-    background: rgba(15, 23, 42, .72);
-    border: 1px solid rgba(148,163,184,.16);
-    border-radius: 20px;
-    box-shadow: 0 18px 55px rgba(0,0,0,.30);
-    backdrop-filter: blur(18px);
-}
-
-.hero {
-    padding: 22px 26px;
-    margin-bottom: 16px;
-    border-color: rgba(34,211,238,.25);
-}
-
-.hero-top {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 18px;
-}
-
-.brand {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-}
-
-.logo {
-    width: 46px;
-    height: 46px;
-    border-radius: 15px;
-    background: rgba(34,211,238,.16);
-    border: 1px solid rgba(34,211,238,.35);
-    color: #67e8f9;
-    display: grid;
-    place-items: center;
-    font-weight: 800;
-}
-
-.title {
-    font-size: 1.9rem;
-    font-weight: 850;
-    letter-spacing: -.04em;
-}
-
-.subtitle {
-    color: #94a3b8;
-    margin-top: 3px;
-    font-size: .9rem;
-}
-
-.online {
-    padding: 8px 13px;
-    border-radius: 999px;
-    background: rgba(20,184,166,.13);
-    border: 1px solid rgba(45,212,191,.3);
-    color: #99f6e4;
-    font-size: .78rem;
-    font-weight: 800;
-    white-space: nowrap;
-}
-
-.metrics {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 11px;
-    margin-top: 16px;
-}
-
-.metric {
-    background: rgba(2,6,23,.36);
-    border: 1px solid rgba(148,163,184,.12);
-    border-radius: 16px;
-    padding: 13px;
-}
-
-.metric .label, .label {
-    color: #94a3b8;
-    font-size: .66rem;
-    text-transform: uppercase;
-    letter-spacing: .14em;
-    font-weight: 800;
-    margin-bottom: 6px;
-}
-
-.metric .value {
-    font-size: 1.45rem;
-    font-weight: 850;
-    color: #f8fafc;
-}
-
-.panel {
-    padding: 16px;
-    margin-bottom: 14px;
-}
-
-.panel-title {
-    color: #e2e8f0;
-    font-size: .8rem;
-    text-transform: uppercase;
-    letter-spacing: .14em;
-    font-weight: 850;
-    margin: 16px 0 10px;
-}
-
-.notice {
-    background: rgba(251,191,36,.09);
-    border: 1px solid rgba(251,191,36,.25);
-    color: #fde68a;
-    border-radius: 15px;
-    padding: 11px 15px;
-    font-size: .82rem;
-    margin-bottom: 15px;
-}
-
-.step {
-    display: flex;
-    gap: 11px;
-    align-items: flex-start;
-    background: rgba(2,6,23,.34);
-    border: 1px solid rgba(148,163,184,.10);
-    border-radius: 15px;
-    padding: 11px;
-    margin-bottom: 8px;
-}
-
-.step-num {
-    width: 30px;
-    height: 30px;
-    border-radius: 10px;
-    background: rgba(34,211,238,.13);
-    border: 1px solid rgba(34,211,238,.3);
-    color: #67e8f9;
-    display: grid;
-    place-items: center;
-    font-weight: 850;
-    flex-shrink: 0;
-}
-
-.step b {color: #f8fafc; font-size: .87rem;}
-.step p {color: #94a3b8; margin: 2px 0 0; font-size: .76rem;}
-
-.badge {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: fit-content;
-    max-width: 160px;
-    padding: 6px 10px;
-    border-radius: 999px;
-    font-size: .68rem;
-    font-weight: 850;
-    text-transform: uppercase;
-    letter-spacing: .05em;
-    white-space: nowrap;
-}
-
-.success {
-    color: #86efac;
-    background: rgba(34,197,94,.12);
-    border: 1px solid rgba(34,197,94,.32);
-}
-
-.danger {
-    color: #fda4af;
-    background: rgba(244,63,94,.12);
-    border: 1px solid rgba(244,63,94,.32);
-}
-
-.warning {
-    color: #fde68a;
-    background: rgba(251,191,36,.12);
-    border: 1px solid rgba(251,191,36,.32);
-}
-
-.conf-track {
-    height: 8px;
-    background: rgba(30,41,59,.85);
-    border-radius: 999px;
-    overflow: hidden;
-    margin-top: 8px;
-}
-
-.conf-fill {
-    height: 100%;
-    background: linear-gradient(90deg, #22d3ee, #34d399);
-    border-radius: 999px;
-}
-
-.report-item {
-    background: rgba(2,6,23,.25);
-    border: 1px solid rgba(148,163,184,.10);
-    border-radius: 13px;
-    padding: 11px;
-    margin-bottom: 8px;
-}
-
-.text {
-    color: #e2e8f0;
-    font-size: .86rem;
-    line-height: 1.5;
-}
-
-.report-item ul {
-    margin: 6px 0 0 18px;
-    color: #e2e8f0;
-    font-size: .86rem;
-}
-
-.history-row {
-    display: grid;
-    grid-template-columns: 1.45fr .65fr .45fr .75fr;
-    gap: 12px;
-    align-items: center;
-    background: rgba(2,6,23,.32);
-    border: 1px solid rgba(148,163,184,.10);
-    border-radius: 16px;
-    padding: 12px 14px;
-    margin-bottom: 10px;
-}
-
-.mono {
-    color: #cbd5e1;
-    font-size: .76rem;
-    font-family: monospace;
-}
-
-.muted {
-    color: #94a3b8;
-    font-size: .76rem;
-}
-
-.center {
-    text-align: center;
-}
-
-.error-box {
-    background: rgba(244,63,94,.09);
-    border: 1px solid rgba(244,63,94,.25);
-    border-radius: 13px;
-    padding: 11px;
-    margin-bottom: 8px;
-    color: #fda4af;
-}
-
-.error-box p, .error-box small {
-    color: #cbd5e1;
-    margin: 4px 0 0;
-}
-
+/* ── Buttons ───────────────────────────────────────────────── */
 div.stButton > button {
-    border-radius: 14px !important;
-    padding: 10px 16px !important;
-    min-height: 43px !important;
-    font-size: .86rem !important;
-    font-weight: 800 !important;
-    background: linear-gradient(135deg, #0891b2, #0f766e) !important;
-    color: white !important;
-    border: 1px solid rgba(34,211,238,.28) !important;
+    border-radius: 10px !important;
+    padding: 10px 20px !important;
+    font-weight: 600 !important;
+    font-size: 0.88rem !important;
+    font-family: 'DM Sans', sans-serif !important;
+    transition: all .18s ease !important;
 }
-
+div.stButton > button[kind="primary"],
+div.stButton > button:first-child {
+    background: #0F172A !important;
+    color: #F8FAFC !important;
+    border: none !important;
+}
 div.stButton > button:hover {
-    transform: translateY(-1px);
-    border-color: rgba(103,232,249,.5) !important;
+    opacity: .88 !important;
+    transform: translateY(-1px) !important;
 }
 
 div.stDownloadButton > button {
-    border-radius: 14px !important;
-    padding: 10px 16px !important;
-    min-height: 43px !important;
-    background: linear-gradient(135deg, #059669, #0f766e) !important;
+    border-radius: 10px !important;
+    background: #10B981 !important;
     color: white !important;
-    font-weight: 800 !important;
-    border: 1px solid rgba(52,211,153,.35) !important;
+    font-weight: 600 !important;
+    border: none !important;
 }
 
+/* ── Upload zone ───────────────────────────────────────────── */
 .stFileUploader > div {
-    background: rgba(15,23,42,.60) !important;
-    border: 1.5px dashed rgba(34,211,238,.28) !important;
-    border-radius: 18px !important;
+    background: white !important;
+    border: 2px dashed #CBD5E1 !important;
+    border-radius: 14px !important;
+    transition: border-color .2s !important;
+}
+.stFileUploader > div:hover {
+    border-color: #0EA5E9 !important;
 }
 
+/* ── Text input ────────────────────────────────────────────── */
+.stTextInput input {
+    border-radius: 10px !important;
+    border: 1.5px solid #E2E8F0 !important;
+    font-family: 'DM Sans', sans-serif !important;
+    background: white !important;
+    color: #1E293B !important;
+    padding: 10px 14px !important;
+}
+.stTextInput input:focus {
+    border-color: #0EA5E9 !important;
+    box-shadow: 0 0 0 3px rgba(14,165,233,.12) !important;
+}
+
+/* ── Image ─────────────────────────────────────────────────── */
 [data-testid="stImage"] img {
-    border-radius: 18px;
-    border: 1px solid rgba(148,163,184,.16);
+    border-radius: 14px;
+    border: 1px solid #E2E8F0;
 }
 
-input {
-    background: rgba(2,6,23,.55) !important;
-    color: #f8fafc !important;
+/* ── Info / warning / error ────────────────────────────────── */
+.stAlert {
     border-radius: 12px !important;
-}
-
-@media(max-width: 900px) {
-    .metrics {grid-template-columns: 1fr 1fr;}
-    .history-row {grid-template-columns: 1fr;}
 }
 </style>
 """)
 
-with st.sidebar:
-    H(f"""
-    <div class="panel">
-      <div class="label">MedTriage AI</div>
-      <div style="font-size:1.35rem;font-weight:850;">Online</div>
-      <div class="muted">Multi-agent medical triage platform</div>
-    </div>
-    <div class="panel">
-      <div class="label">Completed Analyses</div>
-      <div style="font-size:1.55rem;font-weight:850;">{metrics["total"]}</div>
-      <div class="muted">Successful orchestrated workflows</div>
-    </div>
-    <div class="panel">
-      <div class="label">Average Confidence</div>
-      <div style="font-size:1.55rem;font-weight:850;">{metrics["avg"] * 100:.1f}%</div>
-      <div class="muted">CNN prediction confidence</div>
-    </div>
-    <div class="panel">
-      <div class="label">System Errors</div>
-      <div style="font-size:1.55rem;font-weight:850;">{metrics["errors"]}</div>
-      <div class="muted">Validation or generation errors</div>
+
+# ─────────────────────────────────────────────────────────────────────
+# COMPONENT HELPERS
+# ─────────────────────────────────────────────────────────────────────
+
+def section_title(text, sub=None):
+    sub_html = f'<p style="margin:2px 0 0;color:#64748B;font-size:.82rem;font-weight:400;">{sub}</p>' if sub else ""
+    md(f"""
+    <div style="margin:24px 0 14px;">
+      <h3 style="margin:0;font-size:1rem;font-weight:700;color:#0F172A;
+                 text-transform:uppercase;letter-spacing:.08em;">{text}</h3>
+      {sub_html}
     </div>
     """)
 
-H(f"""
-<div class="hero">
-  <div class="hero-top">
-    <div class="brand">
-      <div class="logo">MT</div>
-      <div>
-        <div class="title">MedTriage AI</div>
-        <div class="subtitle">AI-assisted chest X-ray triage using multi-agent workflow, PyTorch CNN, Ollama LLM and human validation.</div>
+
+def stat_card(label, value, color="#0F172A", bg="#FFFFFF", border="#E2E8F0"):
+    md(f"""
+    <div style="background:{bg};border:1px solid {border};border-radius:14px;
+                padding:16px 18px;margin-bottom:0;">
+      <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;
+                  letter-spacing:.12em;color:#64748B;margin-bottom:6px;">{label}</div>
+      <div style="font-size:1.6rem;font-weight:700;color:{color};
+                  font-family:'DM Sans',sans-serif;">{value}</div>
+    </div>
+    """)
+
+
+def result_card(prediction, confidence_text, bar_pct, risk_label, risk_color, risk_bg):
+    pred_color, pred_bg, pred_icon = pred_info(prediction)
+    md(f"""
+    <div style="background:white;border:1px solid #E2E8F0;border-radius:16px;
+                padding:20px 22px;margin-bottom:14px;">
+
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;
+                  margin-bottom:18px;">
+        <div>
+          <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;
+                      letter-spacing:.12em;color:#94A3B8;margin-bottom:6px;">Diagnosis</div>
+          <div style="display:inline-flex;align-items:center;gap:8px;
+                      background:{pred_bg};border:1px solid {pred_color}30;
+                      border-radius:10px;padding:8px 14px;">
+            <span style="font-size:1rem;">{pred_icon}</span>
+            <span style="font-size:1rem;font-weight:700;color:{pred_color};">{prediction}</span>
+          </div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;
+                      letter-spacing:.12em;color:#94A3B8;margin-bottom:6px;">Risk Level</div>
+          <div style="display:inline-block;background:{risk_bg};
+                      border:1px solid {risk_color}40;border-radius:10px;
+                      padding:8px 14px;font-size:.92rem;font-weight:700;
+                      color:{risk_color};">{risk_label}</div>
+        </div>
+      </div>
+
+      <div style="margin-bottom:6px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;
+                    margin-bottom:6px;">
+          <span style="font-size:.75rem;font-weight:600;color:#64748B;">
+            Model Confidence
+          </span>
+          <span style="font-size:.88rem;font-weight:700;color:#0F172A;">
+            {confidence_text}
+          </span>
+        </div>
+        <div style="height:6px;background:#F1F5F9;border-radius:999px;overflow:hidden;">
+          <div style="height:100%;width:{bar_pct}%;
+                      background:linear-gradient(90deg,#0EA5E9,#10B981);
+                      border-radius:999px;transition:width .6s ease;"></div>
+        </div>
       </div>
     </div>
-    <div class="online">System Online</div>
-  </div>
+    """)
 
-  <div class="metrics">
-    <div class="metric">
-      <div class="label">Total Analyses</div>
-      <div class="value">{metrics["total"]}</div>
+
+def report_field(label, value, highlight=False):
+    bg    = "#F0FDF4" if highlight else "#F8FAFC"
+    border = "#86EFAC" if highlight else "#E2E8F0"
+    md(f"""
+    <div style="background:{bg};border:1px solid {border};border-radius:12px;
+                padding:12px 16px;margin-bottom:8px;">
+      <div style="font-size:.65rem;font-weight:700;text-transform:uppercase;
+                  letter-spacing:.1em;color:#94A3B8;margin-bottom:4px;">{label}</div>
+      <div style="font-size:.88rem;color:#1E293B;line-height:1.55;">{value}</div>
     </div>
-    <div class="metric">
-      <div class="label">Pneumonia</div>
-      <div class="value">{metrics["pneumonia"]}</div>
+    """)
+
+
+def history_row(ts, pred, conf, risk):
+    pred_color, pred_bg, pred_icon = pred_info(pred)
+    risk_label, risk_color, risk_bg = risk_info(risk)
+    md(f"""
+    <div style="display:grid;grid-template-columns:1.6fr .9fr .7fr .9fr;gap:12px;
+                align-items:center;background:white;border:1px solid #E2E8F0;
+                border-radius:12px;padding:12px 16px;margin-bottom:8px;">
+      <div>
+        <div style="font-size:.8rem;font-weight:600;color:#1E293B;
+                    font-family:'DM Mono',monospace;">{ts}</div>
+        <div style="font-size:.72rem;color:#94A3B8;margin-top:2px;">Completed</div>
+      </div>
+      <div style="display:inline-flex;align-items:center;gap:5px;
+                  background:{pred_bg};border-radius:8px;padding:5px 10px;
+                  font-size:.75rem;font-weight:700;color:{pred_color};">
+        {pred_icon} {pred}
+      </div>
+      <div style="font-size:.88rem;font-weight:600;color:#0F172A;text-align:center;">
+        {conf}
+      </div>
+      <div style="display:inline-block;background:{risk_bg};border-radius:8px;
+                  padding:5px 10px;font-size:.72rem;font-weight:700;color:{risk_color};">
+        {risk_label}
+      </div>
     </div>
-    <div class="metric">
-      <div class="label">Normal</div>
-      <div class="value">{metrics["normal"]}</div>
+    """)
+
+
+def disclaimer_banner():
+    md("""
+    <div style="background:#FFF7ED;border:1px solid #FED7AA;border-radius:12px;
+                padding:12px 16px;margin-bottom:20px;display:flex;gap:10px;
+                align-items:flex-start;">
+      <span style="font-size:1rem;flex-shrink:0;">⚠️</span>
+      <p style="margin:0;font-size:.8rem;color:#92400E;line-height:1.5;">
+        <strong>AI-Assisted Preliminary Triage Only.</strong>
+        This system does not replace clinical judgment.
+        All results require human validation before any medical decision.
+      </p>
     </div>
-    <div class="metric">
-      <div class="label">Avg Confidence</div>
-      <div class="value">{metrics["avg"] * 100:.1f}%</div>
+    """)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# SIDEBAR
+# ─────────────────────────────────────────────────────────────────────
+logs    = load_logs()
+metrics = get_metrics(logs)
+
+with st.sidebar:
+    md("""
+    <div style="padding:20px 16px 10px;">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;">
+        <span style="font-size:1.5rem;">🫁</span>
+        <div>
+          <div style="font-size:1rem;font-weight:700;color:#F1F5F9;">MedTriage AI</div>
+          <div style="font-size:.72rem;color:#64748B;">v1.0 · Online</div>
+        </div>
+      </div>
     </div>
+    <hr style="border:none;border-top:1px solid #1E293B;margin:0 16px 16px;">
+    """)
+
+    with st.sidebar:
+        md(f"""
+        <div style="padding:0 16px;">
+          <div style="margin-bottom:14px;">
+            <div style="font-size:.65rem;font-weight:700;text-transform:uppercase;
+                        letter-spacing:.12em;color:#475569;margin-bottom:4px;">
+              Total Analyses
+            </div>
+            <div style="font-size:1.8rem;font-weight:700;color:#F1F5F9;">
+              {metrics['total']}
+            </div>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px;">
+            <div style="background:#1E293B;border-radius:10px;padding:12px;">
+              <div style="font-size:.62rem;color:#64748B;font-weight:700;
+                          text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px;">
+                Normal
+              </div>
+              <div style="font-size:1.2rem;font-weight:700;color:#34D399;">
+                {metrics['normal']}
+              </div>
+            </div>
+            <div style="background:#1E293B;border-radius:10px;padding:12px;">
+              <div style="font-size:.62rem;color:#64748B;font-weight:700;
+                          text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px;">
+                Pneumonia
+              </div>
+              <div style="font-size:1.2rem;font-weight:700;color:#F87171;">
+                {metrics['pneumonia']}
+              </div>
+            </div>
+          </div>
+
+          <div style="background:#1E293B;border-radius:10px;padding:12px;margin-bottom:14px;">
+            <div style="font-size:.62rem;color:#64748B;font-weight:700;
+                        text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px;">
+              Avg. Confidence
+            </div>
+            <div style="font-size:1.2rem;font-weight:700;color:#7DD3FC;">
+              {metrics['avg']*100:.1f}%
+            </div>
+          </div>
+
+          <div style="background:#1E293B;border-radius:10px;padding:12px;">
+            <div style="font-size:.62rem;color:#64748B;font-weight:700;
+                        text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px;">
+              System Errors
+            </div>
+            <div style="font-size:1.2rem;font-weight:700;
+                        color:{'#F87171' if metrics['errors'] > 0 else '#34D399'};">
+              {metrics['errors']}
+            </div>
+          </div>
+        </div>
+        """)
+
+    md("<hr style='border:none;border-top:1px solid #1E293B;margin:16px;'>")
+    md("""
+    <div style="padding:0 16px 20px;">
+      <div style="font-size:.65rem;font-weight:700;text-transform:uppercase;
+                  letter-spacing:.12em;color:#475569;margin-bottom:10px;">
+        System Info
+      </div>
+      <div style="font-size:.78rem;color:#64748B;line-height:1.8;">
+        🤖 Framework: CrewAI<br>
+        🧠 CNN: PyTorch ResNet<br>
+        📝 LLM: Ollama phi3 (local)<br>
+        🔒 Data: stays on device
+      </div>
+    </div>
+    """)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# MAIN HEADER
+# ─────────────────────────────────────────────────────────────────────
+md("""
+<div style="display:flex;justify-content:space-between;align-items:center;
+            margin-bottom:6px;">
+  <div>
+    <h1 style="margin:0;font-size:1.6rem;font-weight:700;color:#0F172A;">
+      Chest X-Ray Analysis
+    </h1>
+    <p style="margin:4px 0 0;color:#64748B;font-size:.88rem;">
+      AI-assisted preliminary triage · Multi-agent workflow
+    </p>
+  </div>
+  <div style="display:flex;align-items:center;gap:8px;
+              background:#F0FDF4;border:1px solid #86EFAC;
+              border-radius:999px;padding:7px 14px;">
+    <div style="width:8px;height:8px;background:#22C55E;
+                border-radius:50%;animation:pulse 2s infinite;"></div>
+    <span style="font-size:.78rem;font-weight:700;color:#166534;">System Online</span>
   </div>
 </div>
-
-<div class="notice">
-This system provides AI-assisted preliminary analysis only. It does not replace a qualified medical professional.
-Human validation is required before report finalization.
-</div>
+<style>
+@keyframes pulse {
+  0%,100% { opacity:1; }
+  50%      { opacity:.4; }
+}
+</style>
 """)
 
-left, right = st.columns([0.95, 1.05], gap="large")
+disclaimer_banner()
 
+# ─────────────────────────────────────────────────────────────────────
+# MAIN LAYOUT  — two columns
+# ─────────────────────────────────────────────────────────────────────
+left, right = st.columns([1, 1.1], gap="large")
+
+
+# ── LEFT: upload + image ─────────────────────────────────────────────
 with left:
-    H('<div class="panel-title">Case Upload</div>')
+
+    section_title("X-Ray Image", "Upload a chest X-ray to begin")
+
     uploaded_file = st.file_uploader(
-        "Upload chest X-ray image",
+        "Upload chest X-ray",
         type=["jpg", "jpeg", "png"],
         label_visibility="collapsed",
     )
 
     if uploaded_file:
-        st.image(uploaded_file, use_container_width=True)
+        st.image(uploaded_file, use_container_width=True, caption="Uploaded X-Ray")
 
-    H('<div class="panel-title">Multi-Agent Timeline</div>')
-    steps = [
-        ("01", "Orchestrator Agent", "Coordinates the full workflow."),
-        ("02", "X-ray Validator", "Rejects non-medical or invalid images."),
-        ("03", "CNN Classifier", "Runs the PyTorch NORMAL/PNEUMONIA model."),
-        ("04", "Report Generator", "Uses Ollama phi3 to generate a structured report."),
-        ("05", "Human Validation", "Reviewer approves or rejects the report."),
-        ("06", "PDF Export", "Approved report becomes downloadable."),
-    ]
+        md("<div style='margin:14px 0 6px;'></div>")
 
-    for n, title, desc in steps:
-        H(f"""
-        <div class="step">
-          <div class="step-num">{n}</div>
-          <div><b>{title}</b><p>{desc}</p></div>
-        </div>
-        """)
+        col_run, col_clear = st.columns([3, 1], gap="small")
+        with col_run:
+            run_btn = st.button("▶  Run Analysis", use_container_width=True)
+        with col_clear:
+            clear_btn = st.button("✕ Clear", use_container_width=True)
 
-with right:
-    H('<div class="panel-title">Analysis Console</div>')
-
-    if not uploaded_file:
-        st.info("Upload a chest X-ray image to start the analysis.")
-    else:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
-            tmp.write(uploaded_file.getbuffer())
-            image_path = tmp.name
-
-        run_col, clear_col = st.columns([2, 1], gap="small")
-
-        with run_col:
-            run_analysis = st.button("Run Multi-Agent Analysis", use_container_width=True)
-
-        with clear_col:
-            clear = st.button("Clear", use_container_width=True)
-
-        if clear:
-            for key in ["classification", "report", "final_report", "pdf_path"]:
-                st.session_state.pop(key, None)
+        if clear_btn:
+            for k in ["classification", "report", "final_report", "pdf_path"]:
+                st.session_state.pop(k, None)
             st.rerun()
 
-        if run_analysis:
-            for key in ["classification", "report", "final_report", "pdf_path"]:
-                st.session_state.pop(key, None)
+        if run_btn:
+            for k in ["classification", "report", "final_report", "pdf_path"]:
+                st.session_state.pop(k, None)
 
-            with st.spinner("Running multi-agent workflow..."):
-                orchestrator = OrchestratorAgent()
-                result = orchestrator.run(image_path)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+                tmp.write(uploaded_file.getbuffer())
+                image_path = tmp.name
+
+            with st.spinner("Running multi-agent analysis…"):
+                result = OrchestratorAgent().run(image_path)
 
             if result.get("error"):
-                st.error(result["error"])
+                st.error(f"**Error:** {result['error']}")
             else:
                 st.session_state["classification"] = result.get("classification")
-                st.session_state["report"] = result.get("report")
-                st.success("Analysis completed successfully.")
+                st.session_state["report"]          = result.get("report")
+                st.success("Analysis completed.")
 
-    if "classification" in st.session_state:
-        classification = st.session_state["classification"] or {}
-        report = st.session_state["report"] or {}
-
-        pred = classification.get("prediction", "Unknown")
-        conf = classification.get("confidence", "N/A")
-        conf_text, bar = format_confidence(conf)
-        risk = short_risk_label(report.get("risk_level", "Pending"))
-
-        H(f"""
-        <div class="panel">
-          <div class="label">Classification Result</div>
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-            <span class="badge {pred_class(pred)}">{pred}</span>
-            <span class="badge {risk_class(risk)}">{risk}</span>
+    else:
+        md("""
+        <div style="background:white;border:1px solid #E2E8F0;border-radius:14px;
+                    padding:32px;text-align:center;color:#94A3B8;margin-top:8px;">
+          <div style="font-size:2rem;margin-bottom:10px;">🫁</div>
+          <div style="font-size:.9rem;font-weight:500;">
+            Drag &amp; drop or click to upload
           </div>
-          <div class="text">Confidence: <b>{conf_text}</b></div>
-          <div class="conf-track"><div class="conf-fill" style="width:{bar}%"></div></div>
+          <div style="font-size:.78rem;margin-top:4px;">
+            JPG, JPEG, PNG accepted
+          </div>
         </div>
         """)
 
-        H('<div class="panel-title">Generated Medical Report</div>')
-        render_report(report)
+    # ── Recent history ──────────────────────────────────────────────
+    section_title("Recent Cases", "Last 5 completed analyses")
 
-if "report" in st.session_state:
-    H('<div class="panel-title">Human Validation</div>')
+    completed = [
+        x for x in logs
+        if x.get("agent") == "Orchestrator Agent"
+        and x.get("action") == "Workflow completed successfully"
+    ][-5:][::-1]
 
-    reviewer_name = st.text_input("Reviewer name", value="Dr Othman El Ghidani")
-
-    approve_col, reject_col = st.columns(2, gap="medium")
-
-    with approve_col:
-        approve = st.button("Approve + Generate PDF", use_container_width=True)
-
-    with reject_col:
-        reject = st.button("Reject Report", use_container_width=True)
-
-    if approve:
-        with st.spinner("Approving report and generating PDF..."):
-            vr = human_validation_tool(
-                report=st.session_state["report"],
-                decision="approve",
-                reviewer_name=reviewer_name,
+    if not completed:
+        md("""
+        <div style="background:white;border:1px solid #E2E8F0;border-radius:12px;
+                    padding:18px;text-align:center;color:#94A3B8;font-size:.84rem;">
+          No completed analyses yet.
+        </div>
+        """)
+    else:
+        for log in completed:
+            r    = log.get("result") or {}
+            conf, _ = fmt_conf(r.get("confidence"))
+            history_row(
+                ts   = log.get("timestamp", "—"),
+                pred = r.get("prediction", "—"),
+                conf = conf,
+                risk = r.get("risk_level", "—"),
             )
 
-        if vr.get("error"):
-            st.error(vr["error"])
+
+# ── RIGHT: results + validation ──────────────────────────────────────
+with right:
+
+    if "classification" not in st.session_state:
+        section_title("Analysis Results", "Results will appear here after analysis")
+        md("""
+        <div style="background:white;border:1px solid #E2E8F0;border-radius:14px;
+                    padding:40px;text-align:center;color:#94A3B8;">
+          <div style="font-size:2.5rem;margin-bottom:12px;">📋</div>
+          <div style="font-size:.9rem;font-weight:500;margin-bottom:6px;">
+            No results yet
+          </div>
+          <div style="font-size:.8rem;">Upload an X-ray and run the analysis.</div>
+        </div>
+        """)
+
+    else:
+        classification = st.session_state["classification"] or {}
+        report         = st.session_state["report"]         or {}
+
+        pred                       = classification.get("prediction", "Unknown")
+        conf_text, bar_pct         = fmt_conf(classification.get("confidence", 0))
+        risk_label, risk_color, risk_bg = risk_info(report.get("risk_level", ""))
+
+        section_title("Analysis Results")
+        result_card(pred, conf_text, bar_pct, risk_label, risk_color, risk_bg)
+
+        # ── Report fields ───────────────────────────────────────────
+        section_title("Medical Report", "Generated by Ollama phi3 (local)")
+
+        report_field("Analysis Type",    report.get("analysis_type", "—"))
+        report_field("Recommendation",   report.get("recommendation", "—"), highlight=True)
+        report_field("Medical Disclaimer", report.get("medical_disclaimer", "—"))
+        report_field("Generation Mode",  report.get("generation_mode", "—"))
+        report_field("Timestamp",        report.get("timestamp", "—"))
+
+        # ── Human Validation ────────────────────────────────────────
+        section_title("Physician Validation", "Required before report finalization")
+
+        md("""
+        <div style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:14px;
+                    padding:18px 20px;margin-bottom:14px;">
+        """)
+
+        reviewer = st.text_input(
+            "Reviewer name",
+            value="Dr. ",
+            placeholder="Dr. Full Name",
+            label_visibility="visible",
+        )
+
+        col_ap, col_rj = st.columns(2, gap="small")
+
+        with col_ap:
+            approve_btn = st.button("✔  Approve & Generate PDF",
+                                    use_container_width=True)
+        with col_rj:
+            reject_btn  = st.button("✕  Reject Report",
+                                    use_container_width=True)
+
+        md("</div>")
+
+        if approve_btn:
+            with st.spinner("Approving and generating PDF…"):
+                vr = human_validation_tool(
+                    report=st.session_state["report"],
+                    decision="approve",
+                    reviewer_name=reviewer,
+                )
+            if vr.get("error"):
+                st.error(vr["error"])
+            else:
+                st.session_state["final_report"] = vr["final_report"]
+                st.session_state["pdf_path"]     = generate_pdf_report(vr["final_report"])
+                st.success("Report approved. PDF ready.")
+
+        if reject_btn:
+            with st.spinner("Rejecting report…"):
+                vr = human_validation_tool(
+                    report=st.session_state["report"],
+                    decision="reject",
+                    reviewer_name=reviewer,
+                )
+            if vr.get("error"):
+                st.error(vr["error"])
+            else:
+                st.session_state["final_report"] = vr["final_report"]
+                st.warning("Report rejected. Medical review required.")
+
+    # ── Final report + download ──────────────────────────────────────
+    if "final_report" in st.session_state:
+        final   = st.session_state["final_report"]
+        status  = str(final.get("human_validation_status", "")).lower()
+        approved = status == "approved"
+
+        section_title(
+            "Validated Report",
+            "Approved ✔" if approved else "Rejected ✗"
+        )
+
+        if approved:
+            md("""
+            <div style="background:#F0FDF4;border:1px solid #86EFAC;
+                        border-radius:12px;padding:12px 16px;margin-bottom:12px;
+                        display:flex;align-items:center;gap:10px;">
+              <span style="font-size:1.1rem;">✅</span>
+              <span style="font-size:.86rem;color:#166534;font-weight:600;">
+                Report approved and signed. Ready for download.
+              </span>
+            </div>
+            """)
         else:
-            st.session_state["final_report"] = vr["final_report"]
-            st.session_state["pdf_path"] = generate_pdf_report(vr["final_report"])
-            st.success("Report approved and PDF generated.")
+            md("""
+            <div style="background:#FEF2F2;border:1px solid #FECACA;
+                        border-radius:12px;padding:12px 16px;margin-bottom:12px;
+                        display:flex;align-items:center;gap:10px;">
+              <span style="font-size:1.1rem;">🚫</span>
+              <span style="font-size:.86rem;color:#991B1B;font-weight:600;">
+                Report rejected. Requires further medical review.
+              </span>
+            </div>
+            """)
 
-    if reject:
-        with st.spinner("Rejecting report..."):
-            vr = human_validation_tool(
-                report=st.session_state["report"],
-                decision="reject",
-                reviewer_name=reviewer_name,
-            )
+        report_field("Reviewer",         final.get("reviewer_name", "—"))
+        report_field("Review Date",      final.get("review_timestamp", "—"))
+        report_field("Validation Status", final.get("human_validation_status", "—"),
+                     highlight=approved)
+        report_field("Final Status",     final.get("final_status", "—"))
 
-        if vr.get("error"):
-            st.error(vr["error"])
-        else:
-            st.session_state["final_report"] = vr["final_report"]
-            st.warning("Report rejected.")
-
-if "final_report" in st.session_state:
-    final_report = st.session_state["final_report"]
-    status = str(final_report.get("human_validation_status", "")).lower()
-    approved = status == "approved"
-
-    H(f"""
-    <div class="panel-title">
-      Final Report
-      <span class="badge {'success' if approved else 'danger'}" style="margin-left:10px;">
-        {'Approved' if approved else 'Rejected'}
-      </span>
-    </div>
-    """)
-
-    render_report(final_report)
-
-    if approved and "pdf_path" in st.session_state:
-        with open(st.session_state["pdf_path"], "rb") as pdf_file:
-            st.download_button(
-                "Download Approved PDF",
-                data=pdf_file,
-                file_name=os.path.basename(st.session_state["pdf_path"]),
-                mime="application/pdf",
-                use_container_width=True,
-            )
-
-h1, h2 = st.columns([1.25, .75], gap="large")
-
-with h1:
-    H('<div class="panel-title">Analysis History</div>')
-    render_history(load_logs())
-
-with h2:
-    H('<div class="panel-title">System Monitoring</div>')
-    render_errors(load_logs())
+        if approved and "pdf_path" in st.session_state:
+            md("<div style='margin-top:12px;'>")
+            with open(st.session_state["pdf_path"], "rb") as f:
+                st.download_button(
+                    "⬇  Download Medical Report PDF",
+                    data=f,
+                    file_name=os.path.basename(st.session_state["pdf_path"]),
+                    mime="application/pdf",
+                    use_container_width=True,
+                )
+            md("</div>")
